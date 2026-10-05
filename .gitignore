@@ -1,0 +1,16 @@
+node_modules/
+.pnpm-store/
+dist/
+server-dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.env
+.env.*
+!.env.example
+WPVHTO*
+*.pem
+*.key
+*.log
+.DS_Store
+.railway/

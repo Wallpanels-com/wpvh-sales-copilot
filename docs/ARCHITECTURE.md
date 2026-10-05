@@ -1,0 +1,9 @@
+# Architecture
+
+The React application calls a same-origin Fastify API. Supabase Auth issues the browser session; every protected API request verifies the token and loads an active `copilot_profiles` record. Mappings tie a Supabase user to a distinct HighLevel user ID per location. Live reads filter opportunities by `assignedTo` and the location, then join only related contact, conversation, call, and task records.
+
+The read sync is completely disabled unless both `DATA_MODE=live` and `CRM_READ_ENABLED=true`. When enabled, it refreshes mapped opportunities and related records roughly every 90 seconds. There are no HighLevel calls at process start in mock mode. Every write checks its flag, both safe allowlists, mapping and cached ownership, then re-reads the opportunity from HighLevel before mutation. A unique idempotency key is reserved in Supabase audit data before the provider call.
+
+Attention uses deterministic rules first. A standalone acknowledgement such as “Thanks” does not become an unanswered request. A human response is identified by the mapped salesperson's HighLevel user ID; automated outbound is not counted as that response. AI may classify ambiguous attention on explicit analysis only. The AI endpoint hashes meaningful context, reuses cached results, maintains concise relationship memory, records usage, and routes Luna for structured analysis and critic, Sol for customer-facing drafts and at most one rewrite. AI output is never auto-sent.
+
+All `copilot_*` tables have RLS. Authenticated users may read their own profile and mappings and manage their own preferences/lessons. CRM cache and audit tables require the server-side service role key. The Supabase publishable key alone cannot read customer cache. A missing service role key leaves live mode unavailable while mock login and personal preferences can still operate.

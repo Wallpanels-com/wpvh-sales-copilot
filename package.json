@@ -1,0 +1,40 @@
+{
+  "name": "wpvh-sales-copilot",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@10.12.4",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "dev:api": "tsx watch server/index.ts",
+    "build": "tsc --noEmit && esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=server-dist/server.js && vite build",
+    "start": "node server-dist/server.js",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "lint": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "test": "node --import tsx --test server/services/attention.test.ts server/highlevel/safety.test.ts"
+  },
+  "dependencies": {
+    "@fastify/helmet": "13.0.1",
+    "@fastify/rate-limit": "10.3.0",
+    "@fastify/static": "8.2.0",
+    "@fontsource/dm-mono": "5.2.7",
+    "@fontsource/manrope": "5.2.8",
+    "@supabase/supabase-js": "2.75.0",
+    "@vitejs/plugin-react": "4.4.1",
+    "fastify": "5.6.1",
+    "lucide-react": "0.511.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-router-dom": "7.9.4",
+    "vite": "6.3.5",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.10",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "typescript": "5.8.3"
+  }
+}

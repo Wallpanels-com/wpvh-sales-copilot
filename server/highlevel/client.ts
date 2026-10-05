@@ -12,6 +12,14 @@ export async function ghlRequest<T>(locationId: string, path: string, options: {
     body: options.body ? JSON.stringify(options.body) : undefined,
     signal: AbortSignal.timeout(15000),
   })
-  if (!response.ok) throw new ApiError(response.status === 429 ? 'CRM_RATE_LIMITED' : 'CRM_UNAVAILABLE', response.status === 429 ? 429 : 503)
+  if (!response.ok) {
+    const code = response.status === 401 ? 'CRM_TOKEN_INVALID'
+      : response.status === 403 ? 'CRM_SCOPE_DENIED'
+      : response.status === 404 ? 'CRM_ENDPOINT_NOT_FOUND'
+      : response.status === 429 ? 'CRM_RATE_LIMITED'
+      : response.status === 400 || response.status === 422 ? 'CRM_INVALID_REQUEST'
+      : 'CRM_UNAVAILABLE'
+    throw new ApiError(code, response.status === 429 ? 429 : 503)
+  }
   return response.json() as Promise<T>
 }

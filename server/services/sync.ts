@@ -1,6 +1,7 @@
 import { config } from '../config.js'
 import { requireDb } from '../db.js'
 import { highlevelRead } from '../highlevel/read.js'
+import { ApiError } from '../auth.js'
 
 const database=()=>requireDb()
 async function upsert(table:string,row:Record<string,unknown>,onConflict:string) {
@@ -57,8 +58,19 @@ export function startReadSync() {
   const run=async()=>{
     if(running)return
     running=true
-    try { for(const location of config.locations.filter(l=>l.locationId&&l.token)) await syncLocation(location.locationId) }
-    catch(e){ /* No customer data or token is logged. */ }
+    try {
+      for(const location of config.locations.filter(l=>l.locationId&&l.token)) {
+        try { await syncLocation(location.locationId) }
+        catch(e) {
+          const code=e instanceof ApiError ? e.code : e instanceof Error && e.message.startsWith('CACHE_WRITE_FAILED:') ? 'CACHE_WRITE_FAILED' : 'SYNC_FAILED'
+          console.error('CRM_SYNC_FAILED', location.brand, code)
+          try {
+            const {data:previous}=await database().from('copilot_sync_state').select('last_success_at').eq('location_id',location.locationId).eq('resource','sales').maybeSingle()
+            await upsert('copilot_sync_state',{location_id:location.locationId,resource:'sales',last_success_at:previous?.last_success_at||null,last_error:code,updated_at:new Date().toISOString()},'location_id,resource')
+          } catch { console.error('CRM_SYNC_STATUS_WRITE_FAILED', location.brand) }
+        }
+      }
+    } catch { console.error('CRM_SYNC_UNEXPECTED_FAILURE') }
     finally{running=false}
   }
   void run()

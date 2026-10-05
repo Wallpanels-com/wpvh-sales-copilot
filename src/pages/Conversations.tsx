@@ -2,11 +2,12 @@ import { Headphones, MessageSquareText, Phone, Search, Sparkles } from 'lucide-r
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useData } from '../app/useData'
+import { useWorkspace } from '../app/Workspace'
 import { ActionDialog } from '../components/ActionDialog'
 import { Avatar, Button, Empty, Pill, StateView } from '../components/ui'
 import { attentionLabel, type Call, type Conversation, type Message } from '../services/api'
 
-export default function Conversations(){const navigate=useNavigate(),{locationId,conversationId}=useParams();const {data,loading,error,reload}=useData<{items:Conversation[]}>('/conversations');const {data:calls}=useData<{items:Call[]}>('/calls');const [filter,setFilter]=useState('All'),[search,setSearch]=useState(''),[tab,setTab]=useState('Reply'),[composer,setComposer]=useState(''),[mode,setMode]=useState<'Message'|'Internal note'>('Message'),[action,setAction]=useState<'message'|'note'|null>(null),[local,setLocal]=useState<Record<string,Message[]>>({})
+export default function Conversations(){const navigate=useNavigate(),{locationId,conversationId}=useParams(),workspace=useWorkspace();const brand=workspace==='All'?'':`?brand=${encodeURIComponent(workspace)}`;const {data,loading,error,reload}=useData<{items:Conversation[]}>(`/conversations${brand}`);const {data:calls}=useData<{items:Call[]}>(`/calls${brand}`);const [filter,setFilter]=useState('All'),[search,setSearch]=useState(''),[tab,setTab]=useState('Reply'),[composer,setComposer]=useState(''),[mode,setMode]=useState<'Message'|'Internal note'>('Message'),[action,setAction]=useState<'message'|'note'|null>(null),[local,setLocal]=useState<Record<string,Message[]>>({})
  const all=data?.items||[];const visible=useMemo(()=>all.filter(c=>(filter==='All'||attentionLabel(c.status)===filter||(filter==='High priority'&&c.lead.priority.toLowerCase()==='high'))&&`${c.lead.contactName} ${c.lead.company} ${c.snippet}`.toLowerCase().includes(search.toLowerCase())),[all,filter,search]);const selected=visible.find(c=>c.id===conversationId&&c.locationId===locationId)||visible[0]
  useEffect(()=>{if(selected&&(!conversationId||selected.id!==conversationId||selected.locationId!==locationId))navigate(`/conversations/${selected.locationId}/${selected.id}`,{replace:true})},[selected?.id,selected?.locationId,conversationId,locationId,navigate])
  useEffect(()=>{setComposer('')},[selected?.id])

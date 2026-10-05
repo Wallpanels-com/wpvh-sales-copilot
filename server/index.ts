@@ -4,7 +4,7 @@ import rateLimit from '@fastify/rate-limit'
 import fastifyStatic from '@fastify/static'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { z } from 'zod'
+import { z, ZodError } from 'zod'
 import { config } from './config.js'
 import { ApiError, requireOwnedOpportunity, sessionFromRequest } from './auth.js'
 import { db, requireDb, userDb } from './db.js'
@@ -13,7 +13,7 @@ import { liveLeads, liveOpportunity } from './services/live.js'
 import { mockLeads } from '../src/data.js'
 import { startReadSync } from './services/sync.js'
 import { createInternalNote, createTask, sendMessage } from './highlevel/write.js'
-import { generateDraft, structuredAI, actionSchema, attentionSchema, memorySchema, contextHash } from './ai/openrouter.js'
+import { generateDraft, structuredAI, actionSchema, attentionSchema, memorySchema, callSummarySchema, contextHash } from './ai/openrouter.js'
 import { classifyAttention } from './services/attention.js'
 import { highlevelRead } from './highlevel/read.js'
 
@@ -21,7 +21,7 @@ const app=Fastify({logger:false,bodyLimit:32_768,trustProxy:true})
 await app.register(helmet,{contentSecurityPolicy:false})
 await app.register(rateLimit,{max:120,timeWindow:'1 minute'})
 app.setErrorHandler((error,_request,reply)=>{
-  const e=error instanceof ApiError?error:new ApiError('INTERNAL_ERROR',500)
+  const e=error instanceof ApiError?error:error instanceof ZodError?new ApiError('VALIDATION_ERROR',400):(error as any).statusCode===429?new ApiError('RATE_LIMITED',429):new ApiError('INTERNAL_ERROR',500)
   reply.code(e.status).send({error:e.code})
 })
 app.get('/api/health',async()=>({ok:true}))
@@ -32,9 +32,33 @@ const personalDb=(request:any)=>db||userDb(String(request.headers.authorization|
 const listSchema=z.object({search:z.string().max(120).optional(),brand:z.string().optional(),pipeline:z.string().optional(),stage:z.string().optional(),attention:z.string().optional(),channel:z.string().optional(),priority:z.string().optional(),minValue:z.coerce.number().optional(),maxValue:z.coerce.number().optional(),sort:z.string().optional(),page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(50).default(20)})
 const pathSchema=z.object({locationId:z.string().min(1).max(100),opportunityId:z.string().min(1).max(100)})
 app.get('/api/me',auth,async(request)=>({profile:session(request).profile,mappings:session(request).mappings}))
+app.get('/api/today',auth,async(request)=>{
+  const q=z.object({brand:z.string().optional(),attention:z.string().optional()}).parse(request.query)
+  const result=config.dataMode==='mock'?mockLeadsList({brand:q.brand,page:1,limit:10000}):await liveLeads(session(request),{brand:q.brand,page:1,limit:10000})
+  const key=(value:string)=>({'Needs reply':'needs_reply','Call today':'call_today','Follow-up due':'follow_up_due','Estimate waiting':'estimate_waiting','Waiting for client':'waiting_for_client','No action needed':'no_action_needed'} as Record<string,string>)[value]||value
+  const counts:Record<string,number>={}
+  for(const lead of result.items)counts[key(lead.attention)]=(counts[key(lead.attention)]||0)+1
+  return {items:result.items.filter(l=>!q.attention||key(l.attention)===q.attention).slice(0,12),counts,total:result.total,readLocked:'readLocked' in result?result.readLocked:false,mappingMissing:'mappingMissing' in result?result.mappingMissing:false}
+})
 app.get('/api/leads',auth,async(request)=>{
   const f=listSchema.parse(request.query)
   return config.dataMode==='mock'?mockLeadsList(f):liveLeads(session(request),f)
+})
+app.get('/api/lead-filters',auth,async(request)=>{
+  const brand=z.string().optional().parse((request.query as any)?.brand)
+  const unique=(values:(string|null|undefined)[])=>[...new Set(values.filter((v):v is string=>!!v))].sort()
+  if(config.dataMode==='mock'){
+    const leads=mockLeads.map(mockLead).filter(l=>!brand||l.brand===brand)
+    return {pipelines:unique(leads.map(l=>l.pipeline)),stages:unique(leads.map(l=>l.stage)),channels:unique(leads.map(l=>l.channel))}
+  }
+  if(!config.crmReadEnabled)return {pipelines:[],stages:[],channels:[]}
+  const rows:any[]=[]
+  for(const mapping of session(request).mappings.filter(m=>!brand||m.brand===brand)){
+    const {data,error}=await requireDb().from('copilot_crm_opportunities_cache').select('pipeline_name,pipeline_stage_name').eq('location_id',mapping.location_id).eq('assigned_to',mapping.ghl_user_id).eq('status','open')
+    if(error)throw new ApiError('DATABASE_UNAVAILABLE',503)
+    rows.push(...(data||[]))
+  }
+  return {pipelines:unique(rows.map(r=>r.pipeline_name)),stages:unique(rows.map(r=>r.pipeline_stage_name)),channels:['SMS','Email','WhatsApp','IG','FB']}
 })
 app.get('/api/leads/:locationId/:opportunityId',auth,async(request)=>{
   const p=pathSchema.parse(request.params)
@@ -51,7 +75,7 @@ app.get('/api/conversations',auth,async(request)=>{
   const brand=(request.query as any)?.brand as string|undefined
   if(config.dataMode==='mock')return {items:mockConversationsList(brand)}
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
-  const leads=await liveLeads(session(request),{page:1,limit:50})
+  const leads=await liveLeads(session(request),{brand,page:1,limit:10000})
   const items=[]
   for(const lead of leads.items){
     const {data}=await requireDb().from('copilot_crm_conversations_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId)
@@ -66,7 +90,7 @@ app.get('/api/calls',auth,async(request)=>{
   const brand=(request.query as any)?.brand as string|undefined
   if(config.dataMode==='mock')return {items:mockCallsList(brand)}
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
-  const leads=await liveLeads(session(request),{page:1,limit:50})
+  const leads=await liveLeads(session(request),{brand,page:1,limit:10000})
   const items=[]
   for(const lead of leads.items){
     const {data}=await requireDb().from('copilot_crm_calls_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId).order('created_at',{ascending:false}).limit(20)
@@ -82,17 +106,33 @@ app.get('/api/calls/:locationId/:messageId/transcription',auth,async(request)=>{
   if(!(owned||[]).some(o=>session(request).mappings.some(m=>m.location_id===p.locationId&&m.ghl_user_id===o.assigned_to)))throw new ApiError('FORBIDDEN',403)
   if(call.transcript)return {transcript:call.transcript}
   if(!config.crmReadEnabled)throw new ApiError('CRM_READ_DISABLED',423)
-  try{return {transcript:await highlevelRead.transcription(p.locationId,p.messageId)}}catch{return {transcript:null}}
+  try{
+    const response:any=await highlevelRead.transcription(p.locationId,p.messageId)
+    const value=response?.transcription||response?.transcript||response?.text||null
+    const transcript=typeof value==='string'?[{time:'',speaker:'Transcript',body:value}]:Array.isArray(value)?value:null
+    if(transcript)await requireDb().from('copilot_crm_calls_cache').update({transcript,transcript_status:'available'}).eq('location_id',p.locationId).eq('message_id',p.messageId)
+    return {transcript}
+  }catch{return {transcript:null}}
 })
 app.get('/api/tasks',auth,async(request)=>{
   const leadId=(request.query as any)?.leadId as string|undefined
   if(config.dataMode==='mock')return {items:mockTasksList(leadId)}
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
-  const leads=await liveLeads(session(request),{page:1,limit:50})
+  const leads=await liveLeads(session(request),{page:1,limit:10000})
   const allowed=leadId?leads.items.filter(l=>l.opportunityId===leadId):leads.items
   const items=[]
   for(const lead of allowed){const {data}=await requireDb().from('copilot_crm_tasks_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId);items.push(...(data||[]).map(t=>({id:t.task_id,leadId:lead.opportunityId,title:t.title,due:t.due_at,priority:'Medium',note:t.body,done:t.completed})))}
   return {items}
+})
+app.get('/api/notes/:locationId/:opportunityId',auth,async(request)=>{
+  const p=pathSchema.parse(request.params)
+  if(config.dataMode==='mock')return {items:[]}
+  if(!config.crmReadEnabled)return {items:[],readLocked:true}
+  const opportunity=await requireOwnedOpportunity(session(request),p.locationId,p.opportunityId)
+  try{
+    const response:any=await highlevelRead.notes(p.locationId,opportunity.contact_id)
+    return {items:(response.notes||[]).map((n:any)=>({id:n.id,body:n.body||'',createdAt:n.dateAdded||n.createdAt||null}))}
+  }catch{throw new ApiError('CRM_UNAVAILABLE',503)}
 })
 const writeTarget=z.object({locationId:z.string().min(1),opportunityId:z.string().min(1),contactId:z.string().min(1)})
 const messageSchema=writeTarget.extend({channel:z.enum(['SMS','Email','WhatsApp','IG','FB']),message:z.string().min(1).max(5000)})
@@ -159,6 +199,21 @@ app.post('/api/ai/lead',auth,async(request)=>{
   const state={location_id:p.locationId,opportunity_id:p.opportunityId,contact_id:o.contact_id,context_hash:hash,attention_type:acknowledged?'waiting_for_client':attention.attention_type,priority:acknowledged?'low':attention.priority,requires_response:acknowledged?false:attention.requires_response,relationship_summary:memory.summary,current_situation:action.current_situation,next_best_action:action.next_best_action,reason:acknowledged?deterministic.reason:attention.reason||action.reason,draft_reply:draft.draft,critic_score:draft.critic?.factuality||null,critic_json:draft.critic,model_used:config.aiFastModel,generated_at:new Date().toISOString()}
   await requireDb().from('copilot_ai_lead_state').upsert(state,{onConflict:'location_id,opportunity_id'})
   return {cached:false,state}
+})
+app.post('/api/ai/call',auth,async(request)=>{
+  const p=z.object({locationId:z.string().min(1),messageId:z.string().min(1),opportunityId:z.string().min(1)}).parse(request.body)
+  if(config.dataMode==='mock'||!config.crmReadEnabled)throw new ApiError('AI_UNAVAILABLE',503)
+  const opportunity=await requireOwnedOpportunity(session(request),p.locationId,p.opportunityId)
+  const {data:call}=await requireDb().from('copilot_crm_calls_cache').select('contact_id,transcript,created_at,duration').eq('location_id',p.locationId).eq('message_id',p.messageId).maybeSingle()
+  if(!call||call.contact_id!==opportunity.contact_id)throw new ApiError('FORBIDDEN',403)
+  if(!call.transcript)throw new ApiError('TRANSCRIPT_UNAVAILABLE',422)
+  const context={transcript:call.transcript,opportunity:{name:opportunity.name,stage:opportunity.pipeline_stage_name},date:call.created_at,duration:call.duration}
+  const hash=contextHash(context)
+  const {data:prior}=await requireDb().from('copilot_ai_call_state').select('*').eq('location_id',p.locationId).eq('message_id',p.messageId).maybeSingle()
+  if(prior?.context_hash===hash)return {cached:true,summary:prior.summary}
+  const summary=await structuredAI({profileId:session(request).profile.id,locationId:p.locationId,opportunityId:p.opportunityId,operation:'call_summary',model:'fast',schema:callSummarySchema,system:'Summarize this sales call only from transcript evidence. For any unknown field write "Not discussed". Do not invent prices, timing, agreements, or commitments.',context})
+  await requireDb().from('copilot_ai_call_state').upsert({location_id:p.locationId,message_id:p.messageId,opportunity_id:p.opportunityId,context_hash:hash,summary,model_used:config.aiFastModel,generated_at:new Date().toISOString()},{onConflict:'location_id,message_id'})
+  return {cached:false,summary}
 })
 const staticRoot=join(fileURLToPath(new URL('..',import.meta.url)),'dist')
 await app.register(fastifyStatic,{root:staticRoot,prefix:'/'})

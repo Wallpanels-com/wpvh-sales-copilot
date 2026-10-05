@@ -42,7 +42,7 @@ async function syncLocation(locationId:string) {
           const thread=await highlevelRead.messages(locationId,conv.id)
           for(const m of thread.messages?.messages||[]) {
             await upsert('copilot_crm_messages_cache',{location_id:locationId,message_id:m.id,conversation_id:conv.id,contact_id:o.contactId,direction:m.direction,channel:m.messageType,body:m.body,user_id:m.userId||null,message_type:m.type,created_at:m.dateAdded},'location_id,message_id')
-            if(m.messageType==='CALL'||m.type==='TYPE_CALL') await upsert('copilot_crm_calls_cache',{location_id:locationId,message_id:m.id,contact_id:o.contactId,conversation_id:conv.id,duration:m.meta?.callDuration||null,recording_url:m.meta?.recordingUrl||null,transcript_status:'unknown',created_at:m.dateAdded},'location_id,message_id')
+            if(m.messageType==='CALL'||m.type==='TYPE_CALL') await upsert('copilot_crm_calls_cache',{location_id:locationId,message_id:m.id,contact_id:o.contactId,conversation_id:conv.id,duration:m.meta?.callDuration||null,recording_url:typeof m.meta?.recordingUrl==='string'&&m.meta.recordingUrl.startsWith('https://')?m.meta.recordingUrl:null,transcript_status:'unknown',created_at:m.dateAdded},'location_id,message_id')
           }
         }
       }

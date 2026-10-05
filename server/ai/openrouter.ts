@@ -8,6 +8,7 @@ export const attentionSchema = z.object({requires_response:z.boolean(),attention
 export const actionSchema = z.object({current_situation:z.string(),next_best_action:z.string(),reason:z.string(),priority:z.enum(['high','medium','low']),suggested_channel:z.string(),should_contact_now:z.boolean(),call_brief:z.unknown().nullable()})
 export const draftSchema = z.object({message:z.string().min(1)})
 export const memorySchema = z.object({summary:z.string().max(1200)})
+export const callSummarySchema = z.object({summary:z.string(),needs:z.string(),objections:z.string(),budget:z.string(),timeline:z.string(),agreements:z.string(),nextStep:z.string(),followUp:z.string()})
 export const criticSchema = z.object({relevance:z.number().min(1).max(10),continuity:z.number().min(1).max(10),tone:z.number().min(1).max(10),factuality:z.number().min(1).max(10),reply_likelihood:z.number().min(0).max(100),verdict:z.enum(['send','rewrite','drop']),reason:z.string(),fix:z.string()})
 export function contextHash(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
 

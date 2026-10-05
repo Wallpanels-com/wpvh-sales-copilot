@@ -36,7 +36,8 @@ export async function sendMessage(target: Target, channel: 'SMS'|'Email'|'WhatsA
     if(channel==='Email'&&!contact.email)throw new ApiError('CHANNEL_UNAVAILABLE',403)
     const {data:preferences}=await database.from('copilot_user_preferences').select('working_hours').eq('profile_id',target.session.profile.id).maybeSingle()
     const hours=preferences?.working_hours as {timezone?:string;days?:Record<string,{start:string;end:string}>}|undefined
-    if(hours?.timezone&&hours?.days){
+    if(!hours?.timezone||!hours.days)throw new ApiError('WORKING_HOURS_UNCONFIGURED',403)
+    if(hours.timezone&&hours.days){
       try{
         const parts=new Intl.DateTimeFormat('en-US',{timeZone:hours.timezone,weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date())
         const part=(name:string)=>parts.find(p=>p.type===name)?.value||''

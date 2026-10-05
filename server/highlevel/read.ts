@@ -10,7 +10,7 @@ export const highlevelRead = {
   conversations: (locationId:string, contactId?:string) => ghlRequest<any>(locationId, `/conversations/search?${q({locationId,...(contactId?{contactId}:{})})}`),
   messages: (locationId:string, conversationId:string) => ghlRequest<any>(locationId, `/conversations/${enc(conversationId)}/messages?limit=100`),
   transcription: (locationId:string, messageId:string) => ghlRequest<any>(locationId, `/conversations/locations/${enc(locationId)}/messages/${enc(messageId)}/transcription`),
-  recording: (locationId:string, messageId:string) => ghlRequest<any>(locationId, `/conversations/messages/${enc(messageId)}/recording`),
+  recording: (locationId:string, messageId:string) => ghlRequest<any>(locationId, `/conversations/messages/${enc(messageId)}/locations/${enc(locationId)}/recording`),
   tasks: (locationId:string, contactId:string) => ghlRequest<any>(locationId, `/contacts/${enc(contactId)}/tasks`),
   notes: (locationId:string, contactId:string) => ghlRequest<any>(locationId, `/contacts/${enc(contactId)}/notes`),
   calendars: (locationId:string) => ghlRequest<any>(locationId, `/calendars/?${q({locationId})}`),

@@ -4,9 +4,18 @@ import { highlevelRead } from '../highlevel/read.js'
 import { ApiError } from '../auth.js'
 
 const database=()=>requireDb()
+export function highLevelTimestamp(value: unknown): string|null {
+  if(value===null||value===undefined||value==='')return null
+  let date:Date
+  if(typeof value==='number'&&Number.isFinite(value))date=new Date(value<100_000_000_000?value*1000:value)
+  else if(typeof value==='string'&&/^\d{10,13}$/.test(value))date=new Date(value.length===10?Number(value)*1000:Number(value))
+  else if(typeof value==='string')date=new Date(value)
+  else return null
+  return Number.isNaN(date.getTime())?null:date.toISOString()
+}
 async function upsert(table:string,row:Record<string,unknown>,onConflict:string) {
   const {error}=await database().from(table).upsert(row,{onConflict})
-  if(error) throw new Error(`CACHE_WRITE_FAILED:${table}`)
+  if(error) throw new Error(`CACHE_WRITE_FAILED:${table}:${error.code||'UNKNOWN'}`)
 }
 async function syncLocation(locationId:string) {
   const pipelines=await highlevelRead.pipelines(locationId)
@@ -39,11 +48,11 @@ async function syncLocation(locationId:string) {
         for(const task of tasks.tasks||[])await upsert('copilot_crm_tasks_cache',{location_id:locationId,task_id:task.id,contact_id:o.contactId,assigned_to:task.assignedTo,title:task.title,body:task.body,due_at:task.dueDate,completed:!!task.completed,synced_at:new Date().toISOString()},'location_id,task_id')
         const conversations=await highlevelRead.conversations(locationId,o.contactId)
         for(const conv of conversations.conversations||[]) {
-          await upsert('copilot_crm_conversations_cache',{location_id:locationId,conversation_id:conv.id,contact_id:o.contactId,last_message_at:conv.lastMessageDate||null,last_message_direction:conv.lastMessageDirection||null,last_message_type:conv.lastMessageType||null,unread_count:conv.unreadCount||0,synced_at:new Date().toISOString()},'location_id,conversation_id')
+          await upsert('copilot_crm_conversations_cache',{location_id:locationId,conversation_id:conv.id,contact_id:o.contactId,last_message_at:highLevelTimestamp(conv.lastMessageDate),last_message_direction:conv.lastMessageDirection||null,last_message_type:conv.lastMessageType||null,unread_count:conv.unreadCount||0,synced_at:new Date().toISOString()},'location_id,conversation_id')
           const thread=await highlevelRead.messages(locationId,conv.id)
           for(const m of thread.messages?.messages||[]) {
-            await upsert('copilot_crm_messages_cache',{location_id:locationId,message_id:m.id,conversation_id:conv.id,contact_id:o.contactId,direction:m.direction,channel:m.messageType,body:m.body,user_id:m.userId||null,message_type:m.type,created_at:m.dateAdded},'location_id,message_id')
-            if(m.messageType==='CALL'||m.type==='TYPE_CALL') await upsert('copilot_crm_calls_cache',{location_id:locationId,message_id:m.id,contact_id:o.contactId,conversation_id:conv.id,duration:m.meta?.callDuration||null,recording_url:typeof m.meta?.recordingUrl==='string'&&m.meta.recordingUrl.startsWith('https://')?m.meta.recordingUrl:null,transcript_status:'unknown',created_at:m.dateAdded},'location_id,message_id')
+            await upsert('copilot_crm_messages_cache',{location_id:locationId,message_id:m.id,conversation_id:conv.id,contact_id:o.contactId,direction:m.direction,channel:m.messageType,body:m.body,user_id:m.userId||null,message_type:String(m.type??''),created_at:highLevelTimestamp(m.dateAdded)},'location_id,message_id')
+            if(m.messageType==='CALL'||m.messageType==='TYPE_CALL'||m.type==='TYPE_CALL') await upsert('copilot_crm_calls_cache',{location_id:locationId,message_id:m.id,contact_id:o.contactId,conversation_id:conv.id,duration:m.meta?.callDuration||null,recording_url:typeof m.meta?.recordingUrl==='string'&&m.meta.recordingUrl.startsWith('https://')?m.meta.recordingUrl:null,transcript_status:'unknown',created_at:highLevelTimestamp(m.dateAdded)},'location_id,message_id')
           }
         }
       }
@@ -62,7 +71,7 @@ export function startReadSync() {
       for(const location of config.locations.filter(l=>l.locationId&&l.token)) {
         try { await syncLocation(location.locationId) }
         catch(e) {
-          const code=e instanceof ApiError ? e.code : e instanceof Error && e.message.startsWith('CACHE_WRITE_FAILED:') ? 'CACHE_WRITE_FAILED' : 'SYNC_FAILED'
+          const code=e instanceof ApiError ? e.code : e instanceof Error && e.message.startsWith('CACHE_WRITE_FAILED:') ? e.message : 'SYNC_FAILED'
           console.error('CRM_SYNC_FAILED', location.brand, code)
           try {
             const {data:previous}=await database().from('copilot_sync_state').select('last_success_at').eq('location_id',location.locationId).eq('resource','sales').maybeSingle()

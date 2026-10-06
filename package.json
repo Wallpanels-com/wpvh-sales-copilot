@@ -11,7 +11,7 @@
     "start": "node server-dist/server.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "lint": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
-    "test": "node --import tsx --test server/services/attention.test.ts server/highlevel/safety.test.ts"
+    "test": "node --import tsx --test server/services/attention.test.ts server/services/sync.test.ts server/highlevel/safety.test.ts"
   },
   "dependencies": {
     "@fastify/helmet": "13.0.1",

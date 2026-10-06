@@ -9,7 +9,7 @@ export const actionSchema = z.object({current_situation:z.string(),next_best_act
 export const draftSchema = z.object({message:z.string().min(1)})
 export const memorySchema = z.object({summary:z.string()})
 export const callSummarySchema = z.object({summary:z.string(),needs:z.string(),objections:z.string(),budget:z.string(),timeline:z.string(),agreements:z.string(),nextStep:z.string(),followUp:z.string()})
-export const criticSchema = z.object({relevance:z.number().min(1).max(10),continuity:z.number().min(1).max(10),tone:z.number().min(1).max(10),factuality:z.number().min(1).max(10),reply_likelihood:z.number().min(0).max(100),verdict:z.enum(['send','rewrite','drop']),reason:z.string(),fix:z.string()})
+export const criticSchema = z.object({relevance:z.number().min(0).max(10),continuity:z.number().min(0).max(10),tone:z.number().min(0).max(10),factuality:z.number().min(0).max(10),reply_likelihood:z.number().min(0).max(100),verdict:z.enum(['send','rewrite','drop']),reason:z.string(),fix:z.string()})
 export function contextHash(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
 
 function outputJsonSchema(schema:z.ZodType<unknown>):unknown {
@@ -51,7 +51,7 @@ export async function structuredAI<T>(args: { profileId:string; locationId:strin
 export async function generateDraft(args:{profileId:string;locationId:string;opportunityId:string;context:unknown}) {
   const common={profileId:args.profileId,locationId:args.locationId,opportunityId:args.opportunityId,context:args.context}
   const draft=await structuredAI({...common,operation:'draft',model:'quality',schema:draftSchema,system:'Write one concise, natural customer reply grounded only in supplied facts. Continue the actual conversation. No invented pricing, availability, or appointments. One clear question at most.'})
-  const critic=await structuredAI({...common,operation:'critic',model:'fast',schema:criticSchema,system:'Evaluate the draft for relevance, continuity, tone, factuality and likelihood of reply. Set verdict send, rewrite, or drop.',context:{context:args.context,draft:draft.message}})
+  const critic=await structuredAI({...common,operation:'critic',model:'fast',schema:criticSchema,system:'Evaluate the draft for relevance, continuity, tone, factuality and likelihood of reply. Score relevance, continuity, tone, and factuality from 0 to 10, where 0 is worst and 10 is best. Score reply_likelihood from 0 to 100. Set verdict send, rewrite, or drop.',context:{context:args.context,draft:draft.message}})
   if(critic.verdict==='drop') return {draft:null,critic}
   if(critic.verdict==='rewrite'||critic.factuality<8||critic.continuity<7) {
     try {

@@ -13,6 +13,9 @@ export function highLevelTimestamp(value: unknown): string|null {
   else return null
   return Number.isNaN(date.getTime())?null:date.toISOString()
 }
+export function belongsToLead(item: {contactId?:unknown; locationId?:unknown}, contactId:string, locationId:string): boolean {
+  return item.contactId===contactId && item.locationId===locationId
+}
 async function upsert(table:string,row:Record<string,unknown>,onConflict:string) {
   const {error}=await database().from(table).upsert(row,{onConflict})
   if(error) throw new Error(`CACHE_WRITE_FAILED:${table}:${error.code||'UNKNOWN'}`)
@@ -48,9 +51,11 @@ async function syncLocation(locationId:string) {
         for(const task of tasks.tasks||[])await upsert('copilot_crm_tasks_cache',{location_id:locationId,task_id:task.id,contact_id:o.contactId,assigned_to:task.assignedTo,title:task.title,body:task.body,due_at:task.dueDate,completed:!!task.completed,synced_at:new Date().toISOString()},'location_id,task_id')
         const conversations=await highlevelRead.conversations(locationId,o.contactId)
         for(const conv of conversations.conversations||[]) {
+          if(!belongsToLead(conv,o.contactId,locationId))continue
           await upsert('copilot_crm_conversations_cache',{location_id:locationId,conversation_id:conv.id,contact_id:o.contactId,last_message_at:highLevelTimestamp(conv.lastMessageDate),last_message_direction:conv.lastMessageDirection||null,last_message_type:conv.lastMessageType||null,unread_count:conv.unreadCount||0,synced_at:new Date().toISOString()},'location_id,conversation_id')
           const thread=await highlevelRead.messages(locationId,conv.id)
           for(const m of thread.messages?.messages||[]) {
+            if(!belongsToLead(m,o.contactId,locationId)||m.conversationId!==conv.id)continue
             await upsert('copilot_crm_messages_cache',{location_id:locationId,message_id:m.id,conversation_id:conv.id,contact_id:o.contactId,direction:m.direction,channel:m.messageType,body:m.body,user_id:m.userId||null,message_type:String(m.type??''),created_at:highLevelTimestamp(m.dateAdded)},'location_id,message_id')
             if(m.messageType==='CALL'||m.messageType==='TYPE_CALL'||m.type==='TYPE_CALL') await upsert('copilot_crm_calls_cache',{location_id:locationId,message_id:m.id,contact_id:o.contactId,conversation_id:conv.id,duration:m.meta?.callDuration||null,recording_url:typeof m.meta?.recordingUrl==='string'&&m.meta.recordingUrl.startsWith('https://')?m.meta.recordingUrl:null,transcript_status:'unknown',created_at:highLevelTimestamp(m.dateAdded)},'location_id,message_id')
           }

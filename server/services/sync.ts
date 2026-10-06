@@ -34,7 +34,7 @@ async function syncLocation(locationId:string) {
       const result=await highlevelRead.opportunities(locationId,userId,page)
       const opportunities=result.opportunities||[]
       for(const o of opportunities) {
-        if(o.assignedTo!==userId) continue
+        if(o.assignedTo!==userId||o.status!=='open') continue
         const pipeline=pmap.get(o.pipelineId)
         const stage=pipeline?.stages.find((s:any)=>s.id===o.pipelineStageId)
         await upsert('copilot_crm_opportunities_cache',{

@@ -4,7 +4,7 @@ const enc = encodeURIComponent
 export const highlevelRead = {
   users: (locationId:string) => ghlRequest<any>(locationId, `/users/?${q({locationId})}`),
   contacts: (locationId:string, id:string) => ghlRequest<any>(locationId, `/contacts/${enc(id)}`),
-  opportunities: (locationId:string, assignedTo?:string, page=1) => ghlRequest<any>(locationId, `/opportunities/search?${q({locationId,status:'all',limit:100,page,...(assignedTo?{assignedTo}:{})})}`),
+  opportunities: (locationId:string, assignedTo?:string, page=1) => ghlRequest<any>(locationId, `/opportunities/search?${q({locationId,status:'open',limit:100,page,...(assignedTo?{assignedTo}:{})})}`),
   opportunity: (locationId:string, id:string) => ghlRequest<any>(locationId, `/opportunities/${enc(id)}`),
   pipelines: (locationId:string) => ghlRequest<any>(locationId, `/opportunities/pipelines?${q({locationId})}`),
   conversations: (locationId:string, contactId?:string) => ghlRequest<any>(locationId, `/conversations/search?${q({locationId,...(contactId?{contactId}:{})})}`),

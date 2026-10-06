@@ -225,9 +225,10 @@ app.post('/api/ai/lead',auth,async(request)=>{
   const {data:contact}=await requireDb().from('copilot_crm_contacts_cache').select('*').eq('location_id',p.locationId).eq('contact_id',o.contact_id).maybeSingle()
   const {data:messages}=await requireDb().from('copilot_crm_messages_cache').select('body,direction,created_at,user_id,channel').eq('location_id',p.locationId).eq('contact_id',o.contact_id).order('created_at',{ascending:false}).limit(16)
   const {data:prior}=await requireDb().from('copilot_ai_lead_state').select('*').eq('location_id',p.locationId).eq('opportunity_id',p.opportunityId).maybeSingle()
-  const context={contact:{firstName:contact?.first_name,lastName:contact?.last_name,company:contact?.company_name,dnd:contact?.dnd},opportunity:{name:o.name,stage:o.pipeline_stage_name,value:o.monetary_value},messages:messages||[],relationshipSummary:prior?.relationship_summary||''}
-  const hash=contextHash(context)
+  const crmContext={contact:{firstName:contact?.first_name,lastName:contact?.last_name,company:contact?.company_name,dnd:contact?.dnd},opportunity:{name:o.name,stage:o.pipeline_stage_name,value:o.monetary_value},messages:messages||[]}
+  const hash=contextHash(crmContext)
   if(prior?.context_hash===hash)return {cached:true,state:prior}
+  const context={...crmContext,relationshipSummary:prior?.relationship_summary||''}
   const mapped=session(request).mappings.find(m=>m.location_id===p.locationId)
   const newestInbound=(messages||[]).find(m=>m.direction==='inbound')
   const newestHumanOutbound=(messages||[]).find(m=>m.direction==='outbound'&&m.user_id===mapped?.ghl_user_id)

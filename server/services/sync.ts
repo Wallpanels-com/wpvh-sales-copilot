@@ -17,8 +17,12 @@ export function belongsToLead(item: {contactId?:unknown; locationId?:unknown}, c
   return item.contactId===contactId && item.locationId===locationId
 }
 async function upsert(table:string,row:Record<string,unknown>,onConflict:string) {
-  const {error}=await database().from(table).upsert(row,{onConflict})
-  if(error) throw new Error(`CACHE_WRITE_FAILED:${table}:${error.code||'UNKNOWN'}`)
+  for(let attempt=0;attempt<3;attempt++) {
+    const {error}=await database().from(table).upsert(row,{onConflict})
+    if(!error)return
+    if(error.code||attempt===2)throw new Error(`CACHE_WRITE_FAILED:${table}:${error.code||'UNKNOWN'}`)
+    await new Promise(resolve=>setTimeout(resolve,500*2**attempt))
+  }
 }
 async function pruneStaleOpportunities(locationId:string,userId:string,startedAt:string) {
   const {data:stale,error:readError}=await database().from('copilot_crm_opportunities_cache').select('contact_id').eq('location_id',locationId).eq('assigned_to',userId).lt('synced_at',startedAt)

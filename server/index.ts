@@ -226,7 +226,7 @@ app.post('/api/ai/lead',auth,async(request)=>{
   const {data:messages}=await requireDb().from('copilot_crm_messages_cache').select('body,direction,created_at,user_id,channel').eq('location_id',p.locationId).eq('contact_id',o.contact_id).order('created_at',{ascending:false}).limit(16)
   const {data:prior}=await requireDb().from('copilot_ai_lead_state').select('*').eq('location_id',p.locationId).eq('opportunity_id',p.opportunityId).maybeSingle()
   const crmContext={contact:{firstName:contact?.first_name,lastName:contact?.last_name,company:contact?.company_name,dnd:contact?.dnd},opportunity:{name:o.name,stage:o.pipeline_stage_name,value:o.monetary_value},messages:messages||[]}
-  const hash=contextHash(crmContext)
+  const hash=contextHash({version:2,...crmContext})
   if(prior?.context_hash===hash)return {cached:true,state:prior}
   const context={...crmContext,relationshipSummary:prior?.relationship_summary||''}
   const mapped=session(request).mappings.find(m=>m.location_id===p.locationId)
@@ -239,8 +239,8 @@ app.post('/api/ai/lead',auth,async(request)=>{
     structuredAI({...aiCommon,operation:'attention',model:'fast',schema:attentionSchema,system:'Classify sales attention from supplied facts. A simple thank you or acknowledgement usually needs no reply. Automated outbound is not a human response. Respect deterministic classification when explicit.',context:{...context,deterministic}}),
     structuredAI({...aiCommon,operation:'relationship_memory',model:'fast',schema:memorySchema,system:'Update a concise factual relationship summary. Include only evidenced needs, objections, agreements, timing, and next step. Do not invent facts.',context}),
   ])
-  const draft=action.should_contact_now?await generateDraft({profileId:session(request).profile.id,locationId:p.locationId,opportunityId:p.opportunityId,context}):{draft:null,critic:null}
   const acknowledged=deterministic.reason==='The latest client message is an acknowledgement.'
+  const draft=!acknowledged&&(deterministic.requires_response||attention.requires_response)?await generateDraft({profileId:session(request).profile.id,locationId:p.locationId,opportunityId:p.opportunityId,context}):{draft:null,critic:null}
   const state={location_id:p.locationId,opportunity_id:p.opportunityId,contact_id:o.contact_id,context_hash:hash,attention_type:acknowledged?'waiting_for_client':attention.attention_type,priority:acknowledged?'low':attention.priority,requires_response:acknowledged?false:attention.requires_response,relationship_summary:memory.summary,current_situation:action.current_situation,next_best_action:action.next_best_action,reason:acknowledged?deterministic.reason:attention.reason||action.reason,draft_reply:draft.draft,critic_score:draft.critic?.factuality||null,critic_json:draft.critic,model_used:config.aiFastModel,generated_at:new Date().toISOString()}
   await requireDb().from('copilot_ai_lead_state').upsert(state,{onConflict:'location_id,opportunity_id'})
   return {cached:false,state}

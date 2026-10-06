@@ -28,7 +28,7 @@ export async function structuredAI<T>(args: { profileId:string; locationId:strin
   const start=Date.now()
   const response=await fetch(`${config.openRouterBaseUrl}/chat/completions`,{
     method:'POST',headers:{Authorization:`Bearer ${config.openRouterKey}`,'Content-Type':'application/json'},
-    body:JSON.stringify({model,temperature:0.2,provider:{require_parameters:true},response_format:{type:'json_schema',json_schema:{name:args.operation,strict:true,schema:outputJsonSchema(args.schema)}},messages:[{role:'system',content:args.system+' Return only a JSON object matching the supplied schema.'},{role:'user',content:JSON.stringify(args.context)}]}),
+    body:JSON.stringify({model,provider:{require_parameters:true},response_format:{type:'json_schema',json_schema:{name:args.operation,strict:true,schema:outputJsonSchema(args.schema)}},messages:[{role:'system',content:args.system+' Return only a JSON object matching the supplied schema.'},{role:'user',content:JSON.stringify(args.context)}]}),
     signal:AbortSignal.timeout(30000),
   })
   if(!response.ok) {

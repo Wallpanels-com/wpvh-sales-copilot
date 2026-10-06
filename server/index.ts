@@ -29,6 +29,20 @@ app.get('/api/public-config',async()=>({supabaseUrl:config.supabaseUrl,supabaseA
 const auth={preHandler:async(request:any)=>{request.session=await sessionFromRequest(request)}}
 const session=(request:any)=>request.session as Awaited<ReturnType<typeof sessionFromRequest>>
 const personalDb=(request:any)=>db||userDb(String(request.headers.authorization||'').replace(/^Bearer /i,''))
+async function cacheRows(table:string,locationId:string,field:string,keys:string[],orderBy:string) {
+  const unique=[...new Set(keys.filter(Boolean))]
+  const rows:any[]=[]
+  for(let offset=0;offset<unique.length;offset+=80) {
+    const chunk=unique.slice(offset,offset+80)
+    for(let start=0;;start+=1000) {
+      const {data,error}=await requireDb().from(table).select('*').eq('location_id',locationId).in(field,chunk).order(orderBy,{ascending:true}).range(start,start+999)
+      if(error)throw new ApiError('DATABASE_UNAVAILABLE',503)
+      rows.push(...(data||[]))
+      if((data||[]).length<1000)break
+    }
+  }
+  return rows
+}
 const listSchema=z.object({search:z.string().max(120).optional(),brand:z.string().optional(),pipeline:z.string().optional(),stage:z.string().optional(),attention:z.string().optional(),channel:z.string().optional(),priority:z.string().optional(),minValue:z.coerce.number().optional(),maxValue:z.coerce.number().optional(),sort:z.string().optional(),page:z.coerce.number().int().min(1).default(1),limit:z.coerce.number().int().min(1).max(50).default(20)})
 const pathSchema=z.object({locationId:z.string().min(1).max(100),opportunityId:z.string().min(1).max(100)})
 app.get('/api/me',auth,async(request)=>({profile:session(request).profile,mappings:session(request).mappings}))
@@ -76,12 +90,26 @@ app.get('/api/conversations',auth,async(request)=>{
   if(config.dataMode==='mock')return {items:mockConversationsList(brand)}
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
   const leads=await liveLeads(session(request),{brand,page:1,limit:10000})
+  const conversationsByContact=new Map<string,any[]>()
+  const messagesByConversation=new Map<string,any[]>()
+  for(const locationId of new Set(leads.items.map(l=>l.locationId))) {
+    const contactIds=leads.items.filter(l=>l.locationId===locationId).map(l=>l.contactId)
+    const conversations=await cacheRows('copilot_crm_conversations_cache',locationId,'contact_id',contactIds,'conversation_id')
+    for(const c of conversations) {
+      const key=`${locationId}:${c.contact_id}`
+      conversationsByContact.set(key,[...(conversationsByContact.get(key)||[]),c])
+    }
+    const messages=await cacheRows('copilot_crm_messages_cache',locationId,'conversation_id',conversations.map(c=>c.conversation_id),'message_id')
+    for(const m of messages) {
+      const key=`${locationId}:${m.conversation_id}`
+      messagesByConversation.set(key,[...(messagesByConversation.get(key)||[]),m])
+    }
+  }
   const items=[]
   for(const lead of leads.items){
-    const {data}=await requireDb().from('copilot_crm_conversations_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId)
-    for(const c of data||[]){
-      const {data:messages}=await requireDb().from('copilot_crm_messages_cache').select('*').eq('location_id',lead.locationId).eq('conversation_id',c.conversation_id).order('created_at',{ascending:true}).limit(50)
-      items.push({id:c.conversation_id,locationId:lead.locationId,leadId:lead.opportunityId,lead,unread:c.unread_count,status:lead.attention,snippet:messages?.at(-1)?.body||'',updated:c.last_message_at,messages:(messages||[]).map(m=>({id:m.message_id,direction:m.direction==='inbound'?'incoming':'outgoing',body:m.body||'',time:m.created_at,channel:m.channel})),lastCallSummary:'',memory:lead.relationshipSummary})
+    for(const c of conversationsByContact.get(`${lead.locationId}:${lead.contactId}`)||[]){
+      const messages=(messagesByConversation.get(`${lead.locationId}:${c.conversation_id}`)||[]).sort((a,b)=>Date.parse(b.created_at||'')-Date.parse(a.created_at||'')).slice(0,50).reverse()
+      items.push({id:c.conversation_id,locationId:lead.locationId,leadId:lead.opportunityId,lead,unread:c.unread_count,status:lead.attention,snippet:messages.at(-1)?.body||'',updated:c.last_message_at,messages:messages.map(m=>({id:m.message_id,direction:m.direction==='inbound'?'incoming':'outgoing',body:m.body||'',time:m.created_at,channel:m.channel})),lastCallSummary:'',memory:lead.relationshipSummary})
     }
   }
   return {items}
@@ -91,10 +119,18 @@ app.get('/api/calls',auth,async(request)=>{
   if(config.dataMode==='mock')return {items:mockCallsList(brand)}
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
   const leads=await liveLeads(session(request),{brand,page:1,limit:10000})
+  const callsByContact=new Map<string,any[]>()
+  for(const locationId of new Set(leads.items.map(l=>l.locationId))) {
+    const calls=await cacheRows('copilot_crm_calls_cache',locationId,'contact_id',leads.items.filter(l=>l.locationId===locationId).map(l=>l.contactId),'message_id')
+    for(const call of calls) {
+      const key=`${locationId}:${call.contact_id}`
+      callsByContact.set(key,[...(callsByContact.get(key)||[]),call])
+    }
+  }
   const items=[]
   for(const lead of leads.items){
-    const {data}=await requireDb().from('copilot_crm_calls_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId).order('created_at',{ascending:false}).limit(20)
-    for(const c of data||[])items.push({id:c.message_id,locationId:lead.locationId,leadId:lead.opportunityId,lead,date:c.created_at,duration:c.duration,recordingUrl:c.recording_url,transcript:c.transcript||null,summary:null,followUp:'Analyzed'})
+    const calls=(callsByContact.get(`${lead.locationId}:${lead.contactId}`)||[]).sort((a,b)=>Date.parse(b.created_at||'')-Date.parse(a.created_at||'')).slice(0,20)
+    for(const c of calls)items.push({id:c.message_id,locationId:lead.locationId,leadId:lead.opportunityId,lead,date:c.created_at,duration:c.duration,recordingUrl:c.recording_url,transcript:c.transcript||null,summary:null,followUp:'Analyzed'})
   }
   return {items}
 })
@@ -120,8 +156,16 @@ app.get('/api/tasks',auth,async(request)=>{
   if(!config.crmReadEnabled)return {items:[],readLocked:true}
   const leads=await liveLeads(session(request),{page:1,limit:10000})
   const allowed=leadId?leads.items.filter(l=>l.opportunityId===leadId):leads.items
+  const tasksByContact=new Map<string,any[]>()
+  for(const locationId of new Set(allowed.map(l=>l.locationId))) {
+    const tasks=await cacheRows('copilot_crm_tasks_cache',locationId,'contact_id',allowed.filter(l=>l.locationId===locationId).map(l=>l.contactId),'task_id')
+    for(const task of tasks) {
+      const key=`${locationId}:${task.contact_id}`
+      tasksByContact.set(key,[...(tasksByContact.get(key)||[]),task])
+    }
+  }
   const items=[]
-  for(const lead of allowed){const {data}=await requireDb().from('copilot_crm_tasks_cache').select('*').eq('location_id',lead.locationId).eq('contact_id',lead.contactId);items.push(...(data||[]).map(t=>({id:t.task_id,leadId:lead.opportunityId,title:t.title,due:t.due_at,priority:'Medium',note:t.body,done:t.completed})))}
+  for(const lead of allowed)items.push(...(tasksByContact.get(`${lead.locationId}:${lead.contactId}`)||[]).map(t=>({id:t.task_id,leadId:lead.opportunityId,title:t.title,due:t.due_at,priority:'Medium',note:t.body,done:t.completed})))
   return {items}
 })
 app.get('/api/notes/:locationId/:opportunityId',auth,async(request)=>{

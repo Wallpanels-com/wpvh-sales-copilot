@@ -11,25 +11,17 @@ export async function liveLeads(session:Session, f:LeadFilters) {
   if(!allowed.length) return {items:[],total:0,mappingMissing:true}
   let all:any[]=[]
   for(const mapping of allowed) {
-    let query=database.from('copilot_crm_opportunities_cache').select('*').eq('location_id',mapping.location_id).eq('assigned_to',mapping.ghl_user_id).eq('status','open')
+    let query=database.from('copilot_live_lead_rows').select('*').eq('location_id',mapping.location_id).eq('assigned_to',mapping.ghl_user_id)
     if(f.opportunityId) query=query.eq('opportunity_id',f.opportunityId)
     const {data,error}=await query
     if(error) throw new Error('CRM_CACHE_UNAVAILABLE')
     all.push(...(data||[]).map(x=>({...x,brand:mapping.brand})))
   }
-  const contacts=await Promise.all(all.map(async o=>{const {data}=await database.from('copilot_crm_contacts_cache').select('*').eq('location_id',o.location_id).eq('contact_id',o.contact_id).maybeSingle();return data}))
-  const states=await Promise.all(all.map(async o=>{const {data}=await database.from('copilot_ai_lead_state').select('*').eq('location_id',o.location_id).eq('opportunity_id',o.opportunity_id).maybeSingle();return data}))
-  const recent=await Promise.all(all.map(async o=>{const {data}=await database.from('copilot_crm_messages_cache').select('body,direction,created_at,user_id,channel').eq('location_id',o.location_id).eq('contact_id',o.contact_id).order('created_at',{ascending:false}).limit(16);return data||[]}))
-  const openTasks=await Promise.all(all.map(async o=>{const {data}=await database.from('copilot_crm_tasks_cache').select('due_at').eq('location_id',o.location_id).eq('contact_id',o.contact_id).eq('completed',false).order('due_at',{ascending:true}).limit(1);return data?.[0]}))
-  let items=all.map((o,i)=>{
-    const c=contacts[i],s=states[i],messages=recent[i]
-    const mapping=allowed.find(m=>m.location_id===o.location_id)
-    const inbound=messages.find(m=>m.direction==='inbound'),humanOutbound=messages.find(m=>m.direction==='outbound'&&m.user_id===mapping?.ghl_user_id)
-    const attention=classifyAttention({status:o.status,stageName:o.pipeline_stage_name,lastInbound:inbound?.body,lastInboundAt:inbound?.created_at,lastHumanOutboundAt:humanOutbound?.created_at,openTaskDueAt:openTasks[i]?.due_at,estimateSentAt:/estimate|proposal/i.test(o.pipeline_stage_name||'')?o.source_updated_at:null})
-    const latest=messages[0]
-    const channel=['SMS','Email','WhatsApp','IG','FB'].includes(latest?.channel||'')?latest.channel:'—'
+  let items=all.map(o=>{
+    const attention=classifyAttention({status:o.status,stageName:o.pipeline_stage_name,lastInbound:o.last_inbound_body,lastInboundAt:o.last_inbound_at,lastHumanOutboundAt:o.last_human_outbound_at,openTaskDueAt:o.open_task_due_at,estimateSentAt:/estimate|proposal/i.test(o.pipeline_stage_name||'')?o.source_updated_at:null})
+    const channel=({'TYPE_SMS':'SMS','SMS':'SMS','TYPE_EMAIL':'Email','Email':'Email','TYPE_WHATSAPP':'WhatsApp','WhatsApp':'WhatsApp','TYPE_INSTAGRAM':'IG','TYPE_FACEBOOK':'FB'} as Record<string,string>)[o.latest_channel]||'—'
     const acknowledged=attention.reason==='The latest client message is an acknowledgement.'
-    return {id:o.opportunity_id,locationId:o.location_id,opportunityId:o.opportunity_id,contactId:o.contact_id,contactName:[c?.first_name,c?.last_name].filter(Boolean).join(' ')||'Unnamed contact',company:c?.company_name||o.name||'—',brand:o.brand,pipeline:o.pipeline_name||'—',stage:o.pipeline_stage_name||'—',attention:acknowledged?attention.attention_type:(s?.attention_type||attention.attention_type),priority:acknowledged?'low':s?.priority||attention.priority,channel,phone:c?.phone||'',email:c?.email||'',estimate:Number(o.monetary_value)||0,lastInteraction:latest?.created_at||o.source_updated_at||o.synced_at,nextAction:s?.next_best_action||'Review opportunity',explanation:acknowledged?attention.reason:s?.reason||attention.reason,relationshipSummary:s?.relationship_summary||'',draftReply:s?.draft_reply||'',criticScore:s?.critic_score||null,dnd:c?.dnd||false}
+    return {id:o.opportunity_id,locationId:o.location_id,opportunityId:o.opportunity_id,contactId:o.contact_id,contactName:[o.contact_first_name,o.contact_last_name].filter(Boolean).join(' ')||'Unnamed contact',company:o.contact_company_name||o.name||'—',brand:o.brand,pipeline:o.pipeline_name||'—',stage:o.pipeline_stage_name||'—',attention:acknowledged?attention.attention_type:(o.state_attention_type||attention.attention_type),priority:acknowledged?'low':o.state_priority||attention.priority,channel,phone:o.contact_phone||'',email:o.contact_email||'',estimate:Number(o.monetary_value)||0,lastInteraction:o.latest_created_at||o.source_updated_at||o.synced_at,nextAction:o.state_next_best_action||'Review opportunity',explanation:acknowledged?attention.reason:o.state_reason||attention.reason,relationshipSummary:o.state_relationship_summary||'',draftReply:o.state_draft_reply||'',criticScore:o.state_critic_score||null,dnd:o.contact_dnd||false}
   })
   if(f.search)items=items.filter(x=>`${x.contactName} ${x.company} ${x.phone} ${x.email}`.toLowerCase().includes(f.search!.toLowerCase()))
   if(f.pipeline)items=items.filter(x=>x.pipeline===f.pipeline)

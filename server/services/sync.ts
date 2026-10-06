@@ -20,6 +20,22 @@ async function upsert(table:string,row:Record<string,unknown>,onConflict:string)
   const {error}=await database().from(table).upsert(row,{onConflict})
   if(error) throw new Error(`CACHE_WRITE_FAILED:${table}:${error.code||'UNKNOWN'}`)
 }
+async function pruneStaleOpportunities(locationId:string,userId:string,startedAt:string) {
+  const {data:stale,error:readError}=await database().from('copilot_crm_opportunities_cache').select('contact_id').eq('location_id',locationId).eq('assigned_to',userId).lt('synced_at',startedAt)
+  if(readError)throw new Error(`CACHE_READ_FAILED:copilot_crm_opportunities_cache:${readError.code||'UNKNOWN'}`)
+  if(!stale?.length)return
+  const {error:deleteError}=await database().from('copilot_crm_opportunities_cache').delete().eq('location_id',locationId).eq('assigned_to',userId).lt('synced_at',startedAt)
+  if(deleteError)throw new Error(`CACHE_WRITE_FAILED:copilot_crm_opportunities_cache:${deleteError.code||'UNKNOWN'}`)
+  for(const contactId of new Set(stale.map(row=>row.contact_id).filter(Boolean))) {
+    const {count,error}=await database().from('copilot_crm_opportunities_cache').select('opportunity_id',{head:true,count:'exact'}).eq('location_id',locationId).eq('contact_id',contactId).eq('status','open')
+    if(error)throw new Error(`CACHE_READ_FAILED:copilot_crm_opportunities_cache:${error.code||'UNKNOWN'}`)
+    if(count)continue
+    for(const table of ['copilot_crm_calls_cache','copilot_crm_messages_cache','copilot_crm_conversations_cache','copilot_crm_tasks_cache','copilot_crm_contacts_cache']) {
+      const {error:cleanupError}=await database().from(table).delete().eq('location_id',locationId).eq('contact_id',contactId)
+      if(cleanupError)throw new Error(`CACHE_WRITE_FAILED:${table}:${cleanupError.code||'UNKNOWN'}`)
+    }
+  }
+}
 async function syncOpportunity(locationId:string,userId:string,o:any,pmap:Map<string,{name:string;stages:any[]}>) {
   if(o.assignedTo!==userId||o.status!=='open')return
   const pipeline=pmap.get(o.pipelineId)
@@ -66,7 +82,9 @@ async function syncLocation(locationId:string) {
   const {data:mappings}=await database().from('copilot_user_ghl_mappings').select('ghl_user_id').eq('location_id',locationId)
   const users=[...new Set((mappings||[]).map(m=>m.ghl_user_id))]
   for(const userId of users) {
+    const startedAt=new Date().toISOString()
     const seen=new Set<string>()
+    let complete=false
     for(let page=1;page<=100;page++) {
       const result=await highlevelRead.opportunities(locationId,userId,page)
       const opportunities:any[]=result.opportunities||[]
@@ -78,8 +96,11 @@ async function syncLocation(locationId:string) {
         const failure=batch.find((item):item is PromiseRejectedResult=>item.status==='rejected')
         if(failure)throw failure.reason
       }
-      if(opportunities.length<100||page>1&&fresh.length===0||typeof result.meta?.total==='number'&&page*100>=result.meta.total)break
+      if(opportunities.length<100||typeof result.meta?.total==='number'&&page*100>=result.meta.total) {complete=true;break}
+      if(page>1&&fresh.length===0)throw new Error('CRM_PAGINATION_STALLED')
     }
+    if(!complete)throw new Error('CRM_PAGE_LIMIT_REACHED')
+    await pruneStaleOpportunities(locationId,userId,startedAt)
   }
   await upsert('copilot_sync_state',{location_id:locationId,resource:'sales',last_success_at:new Date().toISOString(),last_error:null,updated_at:new Date().toISOString()},'location_id,resource')
 }
@@ -93,7 +114,7 @@ export function startReadSync() {
       await Promise.all(config.locations.filter(l=>l.locationId&&l.token).map(async location=>{
         try { await syncLocation(location.locationId) }
         catch(e) {
-          const code=e instanceof ApiError ? e.code : e instanceof Error && /^(CACHE_WRITE_FAILED|CACHE_READ_FAILED|CRM_CONTACT_ID_MISMATCH)/.test(e.message) ? e.message : 'SYNC_FAILED'
+          const code=e instanceof ApiError ? e.code : e instanceof Error && /^(CACHE_WRITE_FAILED|CACHE_READ_FAILED|CRM_CONTACT_ID_MISMATCH|CRM_PAGINATION_STALLED|CRM_PAGE_LIMIT_REACHED)/.test(e.message) ? e.message : 'SYNC_FAILED'
           console.error('CRM_SYNC_FAILED', location.brand, code)
           try {
             const {data:previous}=await database().from('copilot_sync_state').select('last_success_at').eq('location_id',location.locationId).eq('resource','sales').maybeSingle()

@@ -5,9 +5,9 @@ import { ApiError } from '../auth.js'
 import { requireDb } from '../db.js'
 
 export const attentionSchema = z.object({requires_response:z.boolean(),attention_type:z.enum(['needs_reply','call_today','follow_up_due','estimate_waiting','waiting_for_client','no_action_needed']),priority:z.enum(['high','medium','low']),reason:z.string(),confidence:z.number().min(0).max(1)})
-export const actionSchema = z.object({current_situation:z.string(),next_best_action:z.string(),reason:z.string(),priority:z.enum(['high','medium','low']),suggested_channel:z.string(),should_contact_now:z.boolean(),call_brief:z.unknown().nullable()})
+export const actionSchema = z.object({current_situation:z.string(),next_best_action:z.string(),reason:z.string(),priority:z.enum(['high','medium','low']),suggested_channel:z.string(),should_contact_now:z.boolean()})
 export const draftSchema = z.object({message:z.string().min(1)})
-export const memorySchema = z.object({summary:z.string().max(1200)})
+export const memorySchema = z.object({summary:z.string()})
 export const callSummarySchema = z.object({summary:z.string(),needs:z.string(),objections:z.string(),budget:z.string(),timeline:z.string(),agreements:z.string(),nextStep:z.string(),followUp:z.string()})
 export const criticSchema = z.object({relevance:z.number().min(1).max(10),continuity:z.number().min(1).max(10),tone:z.number().min(1).max(10),factuality:z.number().min(1).max(10),reply_likelihood:z.number().min(0).max(100),verdict:z.enum(['send','rewrite','drop']),reason:z.string(),fix:z.string()})
 export function contextHash(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
@@ -21,10 +21,19 @@ export async function structuredAI<T>(args: { profileId:string; locationId:strin
     body:JSON.stringify({model,temperature:0.2,response_format:{type:'json_object'},messages:[{role:'system',content:args.system+' Return only a JSON object.'},{role:'user',content:JSON.stringify(args.context)}]}),
     signal:AbortSignal.timeout(30000),
   })
-  if(!response.ok) throw new ApiError(response.status===429?'AI_RATE_LIMITED':'AI_UNAVAILABLE',response.status===429?429:503)
+  if(!response.ok) {
+    console.error('AI_REQUEST_FAILED',args.operation,response.status)
+    throw new ApiError(response.status===429?'AI_RATE_LIMITED':'AI_UNAVAILABLE',response.status===429?429:503)
+  }
   const result:any=await response.json()
-  const parsed=args.schema.safeParse(JSON.parse(result.choices?.[0]?.message?.content||'{}'))
-  if(!parsed.success) throw new ApiError('AI_INVALID_RESPONSE',503)
+  let value:unknown
+  try { value=JSON.parse(result.choices?.[0]?.message?.content||'{}') }
+  catch { console.error('AI_INVALID_JSON',args.operation);throw new ApiError('AI_INVALID_RESPONSE',503) }
+  const parsed=args.schema.safeParse(value)
+  if(!parsed.success) {
+    console.error('AI_SCHEMA_MISMATCH',args.operation,parsed.error.issues.map(issue=>({path:issue.path.join('.'),code:issue.code})))
+    throw new ApiError('AI_INVALID_RESPONSE',503)
+  }
   await requireDb().from('copilot_ai_usage_log').insert({profile_id:args.profileId,location_id:args.locationId,opportunity_id:args.opportunityId,operation:args.operation,model,input_tokens:result.usage?.prompt_tokens||0,output_tokens:result.usage?.completion_tokens||0,estimated_cost:result.usage?.cost||null,latency_ms:Date.now()-start})
   return parsed.data
 }

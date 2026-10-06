@@ -12,13 +12,23 @@ export const callSummarySchema = z.object({summary:z.string(),needs:z.string(),o
 export const criticSchema = z.object({relevance:z.number().min(1).max(10),continuity:z.number().min(1).max(10),tone:z.number().min(1).max(10),factuality:z.number().min(1).max(10),reply_likelihood:z.number().min(0).max(100),verdict:z.enum(['send','rewrite','drop']),reason:z.string(),fix:z.string()})
 export function contextHash(value: unknown) { return createHash('sha256').update(JSON.stringify(value)).digest('hex') }
 
+function outputJsonSchema(schema:z.ZodType<unknown>):unknown {
+  const allowed=new Set(['type','properties','required','additionalProperties','enum','anyOf','items','description'])
+  const clean=(value:unknown):unknown=>{
+    if(Array.isArray(value))return value.map(clean)
+    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([key])=>allowed.has(key)).map(([key,item])=>[key,key==='properties'&&item&&typeof item==='object'?Object.fromEntries(Object.entries(item).map(([name,property])=>[name,clean(property)])):clean(item)]))
+    return value
+  }
+  return clean(z.toJSONSchema(schema))
+}
+
 export async function structuredAI<T>(args: { profileId:string; locationId:string; opportunityId:string; operation:string; model:'fast'|'quality'; system:string; context:unknown; schema:z.ZodType<T> }):Promise<T> {
   if (!config.aiEnabled || !config.openRouterKey) throw new ApiError('AI_UNAVAILABLE',503)
   const model = args.model==='quality'?config.aiQualityModel:config.aiFastModel
   const start=Date.now()
   const response=await fetch(`${config.openRouterBaseUrl}/chat/completions`,{
     method:'POST',headers:{Authorization:`Bearer ${config.openRouterKey}`,'Content-Type':'application/json'},
-    body:JSON.stringify({model,temperature:0.2,response_format:{type:'json_object'},messages:[{role:'system',content:args.system+' Return only a JSON object.'},{role:'user',content:JSON.stringify(args.context)}]}),
+    body:JSON.stringify({model,temperature:0.2,provider:{require_parameters:true},response_format:{type:'json_schema',json_schema:{name:args.operation,strict:true,schema:outputJsonSchema(args.schema)}},messages:[{role:'system',content:args.system+' Return only a JSON object matching the supplied schema.'},{role:'user',content:JSON.stringify(args.context)}]}),
     signal:AbortSignal.timeout(30000),
   })
   if(!response.ok) {
